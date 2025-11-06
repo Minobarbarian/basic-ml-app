@@ -1,54 +1,23 @@
-"""
-This script works as a module and as a CLI tool.
-To use it as a module, you can do:
-```
-from intent_classifier import IntentClassifier
-
-classifier = IntentClassifier(config="configs/confusion.yml", examples_file="data/confusion_intents.yml")
-classifier.train(save_model="models/confusion-clf-v1/")
-classifier.predict(input_text="oi")
-# classifier.cross_validation(n_splits=5)
-```
-Or, or you can use it as a CLI tool, you can do:
-```
-cd intent_classifier
-
-python intent_classifier.py train \
-    --config="models/confusion-v1_config.yml" \
-    --examples_file="data/confusion_intents.yml" \
-    --save_model="models/confusion-v1.keras"
-
-python intent_classifier.py predict \
-    --load_model="models/confusion-v1.keras" \
-    --input_text="teste"
-    
-```
-"""
-# instalar alguns pacotes auxiliares
-
+# importações
 import os
-from pathlib import Path
-from typing import List, Optional, Union
-from dataclasses import dataclass
+import fire
 import yaml
-from pprint import pprint
-
-import pandas as pd
-import numpy as np
-
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.metrics import classification_report, cohen_kappa_score
-
-import tensorflow as tf
-from tensorflow.keras import regularizers
-import tensorflow_text
-import tensorflow_hub as hub
-from tensorflow.keras.saving import register_keras_serializable
-
 import wandb
+import numpy as np
+import pandas as pd
+import tensorflow_text
+import tensorflow as tf
+from pathlib import Path
+from pprint import pprint
+import tensorflow_hub as hub
+from dataclasses import dataclass
+from typing import List, Optional, Union
+from tensorflow.keras import regularizers
+from sklearn.preprocessing import OneHotEncoder
+from tensorflow.keras.saving import register_keras_serializable
+from sklearn.metrics import classification_report, cohen_kappa_score
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from wandb.integration.keras import WandbMetricsLogger, WandbEvalCallback # WandbModelCheckpoint
-
 
 @register_keras_serializable()
 class HubLayer(tf.keras.layers.Layer):
@@ -61,7 +30,7 @@ class HubLayer(tf.keras.layers.Layer):
 
 @dataclass
 class Config:
-    dataset_name: str = "undefined"
+    dataset_name: str
     codes : List[str] = None
     architecture: str = "v0.1.5"
     task: str = "undefined"
@@ -88,7 +57,6 @@ def remove_duplicate_words(text):
             result.append(word)
     return ' '.join(result)
 
-
 def fetch_model_from_wandb(url: str) -> str:
     """Download a model artifact from W&B or return local path.
 
@@ -110,7 +78,7 @@ def fetch_model_from_wandb(url: str) -> str:
         wandb.login()
     else:
         wandb.login(key=api_key)
-    
+        
     api = wandb.Api()
     if ":" not in url:
         url = f"{url}:latest"
@@ -121,7 +89,7 @@ def fetch_model_from_wandb(url: str) -> str:
     models_dir.mkdir(exist_ok=True)
     
     # Download artifact to models directory
-    path = artifact.download(root=models_dir)
+    path = artifact.download()
     
     # Try to locate a Keras model file inside the downloaded directory
     for fname in os.listdir(path):
@@ -129,31 +97,25 @@ def fetch_model_from_wandb(url: str) -> str:
             return os.path.join(path, fname)
     return path
 
-
 class IntentClassifier:
 
-    def __init__(self, config = None, load_model = None, examples_file = None):
+    def __init__(self, config = None, load_model = None, examples_file = None, handle_punctuation = False):
+        self.handle_punctuation = handle_punctuation
         if load_model is None:
-            self.model = None
-        else:
-            if os.path.exists(load_model):
-                self.model = tf.keras.models.load_model(load_model)
-                print(f"Loaded keras model from {load_model}.")
-            else:
-                # Try to load from W&B
-                local_model_path = fetch_model_from_wandb(load_model) # local_model_path é a string do caminho
-                self.model = tf.keras.models.load_model(local_model_path)
-                print(f"Loaded keras model from {load_model}.")
-            if self.model is None:
-                raise ValueError(f"Model file not found: {load_model}. Try to load from W&B or provide a valid path to a Keras model file.")
+            env_url = os.environ.get("WANDB_MODEL_URL")
+            if env_url:
+                try:
+                    load_model = fetch_model_from_wandb(env_url)
+                except Exception as exc:
+                    print(f"Failed to fetch model from {env_url}: {exc}")
         # Load config
-        self._load_config(config, load_model)
+        self._load_config(config, load_model, examples_file)
         # Load intents from the examples file if provided
         self._load_intents(examples_file)
         # Initialize stop_words
         self._load_stop_words(self.config.stop_words_file)
         # Set up one-hot encoder
-        self._setup_onehot_encoder()
+        self._setup_encoder()
         # Set up W&B
         if self.config.wandb_project:
               # Create wandb run instance
@@ -165,7 +127,11 @@ class IntentClassifier:
                   artifact.add_file(examples_file) # Assuming 'examples_file' is the dataset file
                   self.wandb_run.log_artifact(artifact)
 
-    def _load_config(self, config, load_model):
+    def finish_wandb(self):
+        if self.config.wandb_project and self.wandb_run:
+            self.wandb_run.finish()
+
+    def _load_config(self, config, load_model, examples_file):
         if isinstance(config, str):
             with open(config, 'r') as f:
                 self.config = Config(**yaml.safe_load(f))
@@ -175,18 +141,38 @@ class IntentClassifier:
         elif config is None:
             # Load from a model
             if load_model is not None:
-                # self.model = tf.keras.models.load_model(load_model)
-                # print(f"Loaded keras model from {load_model}.")
-                config_path = load_model.replace(".keras", "_config.yml")
+                try:
+                    print(f"Fetching model/path for: {load_model}")
+                    # Baixa o artefato se for uma URL ou apenas retorna o caminho se já for local.
+                    local_model_path = fetch_model_from_wandb(load_model)
+                except Exception as e:
+                    print(f"Failed to fetch model from {load_model}: {e}")
+                    raise e
+                    
+                self.model = tf.keras.models.load_model(local_model_path)
+                print(f"Loaded keras model from {local_model_path}.")
+                config_path = local_model_path.replace(".keras", "_config.yml")
                 if not os.path.exists(config_path):
-                    raise ValueError('The `config` object must be provided for this IntentClassifier.')
+                    artifact_config_path = os.path.join(os.path.dirname(local_model_path), 
+                                                        os.path.basename(config_path))
+                    if os.path.exists(artifact_config_path):
+                        config_path = artifact_config_path
+                    else:
+                        alt_path = os.path.join("tools", "models", os.path.basename(config_path))
+                        if os.path.exists(alt_path):
+                            config_path = alt_path
+                        else:
+                            raise FileNotFoundError(
+                                f"Could not find config file for {local_model_path}. "
+                                f"Tried: {config_path}, {artifact_config_path}, {alt_path}"
+                            )
                 with open(config_path, 'r') as f:
                     self.config = Config(**yaml.safe_load(f))
+                print(f"Loaded config from {config_path}.")
             else:
-                # We must load the config of this model properly...
-                raise ValueError('The `config` object must be provided for this IntentClassifier.')
-        return self.config
-    
+                raise ValueError("config must be a path to a YAML file, a Config object, or None.")
+        else:
+            raise ValueError("config must be a path to a YAML file, a Config object, or None.")
     def _load_intents(self, examples_file):
         self.examples_file = examples_file
         if examples_file is not None:
@@ -201,6 +187,12 @@ class IntentClassifier:
                 labels += [i['intent']]*len(i['examples'])
             input_text = np.array(input_text)
             labels = np.array(labels)
+            # Preprocess input_text
+            # 1 - Iterate on input_text and replace punctuation with " <punctuation>" (apparently it helps the sentence encoder)
+            if self.handle_punctuation:
+                for i, text in enumerate(input_text):
+                    for p, t in PUNCTUATION_TOKENS.items():
+                        input_text[i] = input_text[i].replace(p, f" {t} ").strip()
             # Shuffle data
             indices = np.arange(len(labels))
             np.random.shuffle(indices)
@@ -212,8 +204,6 @@ class IntentClassifier:
         else: # Means that the example_file is not provided
             # Then the model will be used only to predict, no need to load training data
             self.codes = self.config.codes
-        return self.codes
-    
     def _load_stop_words(self, stop_words_file: str):
         if stop_words_file is None:
             self.stop_words = []
@@ -222,13 +212,12 @@ class IntentClassifier:
             self.stop_words = f.read().split('\n')
         print(f"Loaded {len(self.stop_words)} stop words from {stop_words_file}.")
         return self
-    
-    def _setup_onehot_encoder(self):
+    def _setup_encoder(self):
         assert self.codes is not None, "codes must be set before setting up the encoder."
+        if len(self.codes) == 1:
+            self.codes = self.codes[0]
         self.onehot_encoder = OneHotEncoder(categories=[self.codes],)\
                                   .fit(np.array(self.codes).reshape(-1, 1))
-        return self.onehot_encoder
-
     def _get_callbacks(self):
         callbacks = []
         if self.config.callback_patience > 0:
@@ -256,10 +245,6 @@ class IntentClassifier:
             lr_scheduler_callback = tf.keras.callbacks.LearningRateScheduler(lr_scheduler)
             callbacks.append(lr_scheduler_callback)
         return callbacks
-    
-    def finish_wandb(self):
-        if self.config.wandb_project and self.wandb_run:
-            self.wandb_run.finish()
 
     def preprocess_text(self, text):
         text = tf.strings.lower(text)
@@ -275,8 +260,7 @@ class IntentClassifier:
                 # Instead of setting it to an empty string:
                 # text = ""
                 # We should create a dummy string with enough words
-                padding = " ".join(["<>"] * (self.config.min_words + 1))
-                text = tf.constant(padding)
+                text = tf.constant("<> " * (self.config.min_words + 1))
         return tf.expand_dims(tf.strings.as_string(text), 0)  # Convert to 1-D Tensor
 
     def make_model(self, config: Config):
@@ -336,7 +320,7 @@ class IntentClassifier:
         self.model = self.make_model(self.config)
         self.model.compile(
             loss='categorical_crossentropy',
-            optimizer=tf.keras.optimizers.Adam(),
+            optimizer=tf.keras.optimizers.Adam(learning_rate=self.config.learning_rate),
             metrics=[tf.keras.metrics.F1Score(average='macro')])
         # Train the model
         self.model.fit(
@@ -374,6 +358,7 @@ class IntentClassifier:
                 description="Modelo Keras v1 para classificação de intenção"
             )
             artifact.add_file(path)
+            artifact.add_file(config_path)
             self.wandb_run.log_artifact(artifact)
             self.wandb_run.finish()
 
@@ -462,13 +447,7 @@ class IntentClassifier:
             self.wandb_run.finish()
         return results
 
-
-# This script works as a module and as a CLI tool
 if __name__ == "__main__":
-    import fire
-    # Instead of fire.Fire(IntentClassifier),
-    # Define the functions to be used by Fire CLI so that 
-    #  it's not cluttered with all the functions in the IntentClassifier class
     def train(config: str, examples_file: str, save_model: str):
         """Train the model with the given configuration and examples."""
         classifier = IntentClassifier(config=config, examples_file=examples_file)
@@ -489,4 +468,3 @@ if __name__ == "__main__":
         'predict': predict,
         'cross_validation': cross_validation
     }, serialize=False)
-

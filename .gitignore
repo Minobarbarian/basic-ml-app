@@ -1,8 +1,9 @@
 wandb/
-# *.keras
+artifacts/
+*.keras
 *.h5
 sweep_config.yml
-.DS_Store
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

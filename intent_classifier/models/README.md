@@ -1,6 +1,6 @@
-# models
+# Models
 
-Here is where you keep your config files and models. Example of config file used for training:
+Exemplo de arquivo de configuração para treino:
 
 ```yml
 wandb_project: "intent_classifier"
@@ -13,5 +13,4 @@ callback_patience: 100
 validation_split: 0.1
 ```
 
-After training your model, the model should be saved in this folder, and the complete config used in the process will be saved with the same name as the model saved, but with the suffix `_config.yml`.
-
+Após treinar o modelo, ele será salvo nessa pasta.

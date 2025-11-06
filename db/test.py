@@ -1,4 +1,4 @@
-import fire  # <-- Import fire
+import fire
 import pymongo
 from pymongo.errors import ConnectionFailure, OperationFailure
 import sys

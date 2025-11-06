@@ -1,31 +1,34 @@
 import os
 import sys
+import yaml
 import pytest
 import numpy as np
-import yaml
 import pandas as pd
 import tensorflow as tf
-from sklearn.metrics import classification_report, confusion_matrix
 from dotenv import load_dotenv
+from intent_classifier import IntentClassifier, Config
+from sklearn.metrics import classification_report, confusion_matrix
 
-# Adiciona o diretório raiz ao sys.path para encontrar o módulo
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Importa o código fonte que estamos testando
-from intent_classifier import IntentClassifier, Config
-
 # --- Fixtures (Contextos de Teste) ---
-
 @pytest.fixture(scope="session")
-def paths():
+def paths(request):
     """Fornece caminhos para arquivos de dados de teste, pulando se não encontrados."""
+    model_name = getattr(request, "param", "confusion")
+
     test_dir = os.path.dirname(__file__)
     project_root = os.path.abspath(os.path.join(test_dir, ".."))
-    
-    # Caminhos baseados na estrutura de arquivos original
-    examples_path = os.path.join(project_root, "intent_classifier", "data", "confusion_intents.yml")
-    config_path = os.path.join(project_root, "intent_classifier", "models", "confusion-v1_config.yml")
 
+    if model_name == "confusion":
+        examples_path = os.path.join(project_root, "intent_classifier", "data", "confusion_intents.yml")
+        config_path = os.path.join(project_root, "intent_classifier", "models", "confusion-v1_config.yml")
+    elif model_name == "clair":
+        examples_path = os.path.join(project_root, "intent_classifier", "data", "clair_intents.yml")
+        config_path = os.path.join(project_root, "intent_classifier", "models", "clair-v1_config.yml")
+    else:
+        pytest.fail(f"Nome de modelo desconhecido: {model_name}")  
+    
     if not (os.path.exists(examples_path)):
         pytest.skip(f"Arquivos de dados de teste não encontrados em {examples_path}")
     if not (os.path.exists(config_path)):
@@ -34,14 +37,20 @@ def paths():
     return {"config": config_path, "examples": examples_path}
 
 @pytest.fixture(scope="module")
-def clf_wandb(paths):
+def clf_wandb(paths, request):
     """
     Fixture de integração: Carrega o modelo real do W&B.
-    - Pula (skip) se WANDB_MODEL_URL ou WANDB_API_KEY não estiverem definidos.
-    - Falha (fail) se as secrets estiverem definidas, mas o modelo não carregar.
     """
+    model_name = getattr(request, "param", "confusion")
+    if model_name == "confusion":
+        env_url_var = "WANDB_CONFUSION_MODEL_URL"
+    elif model_name == "clair":
+        env_url_var = "WANDB_CLAIR_MODEL_URL"
+    else:
+        pytest.fail(f"Parâmetro de modelo desconhecido: {model_name}")
+
     load_dotenv()
-    env_url = os.getenv("WANDB_MODEL_URL")
+    env_url = os.getenv(env_url_var)
     api_key = os.getenv("WANDB_API_KEY")
 
     if not api_key:
@@ -51,13 +60,11 @@ def clf_wandb(paths):
 
     print("\n🌐 WANDB_MODEL_URL detectado, tentando carregar modelo real...")
 
-    # A inicialização tentará carregar o modelo
-    classifier = IntentClassifier(config=paths["config"], 
-                                  examples_file=paths["examples"],
-                                  load_model=os.environ.get('WANDB_MODEL_URL'))
+    # Carrega o modelo
+    classifier = IntentClassifier(examples_file=paths["examples"],
+                                  load_model=env_url)
     
-    # Validação crucial: o __init__ do código-fonte captura exceções e apenas imprime.
-    # Devemos verificar ativamente se o modelo foi carregado.
+    # Verifica se o modelo foi carregado
     if classifier.model is None:
         pytest.fail(
             f"Secrets W&B definidas, mas o modelo falhou ao carregar de {env_url}. "
@@ -111,20 +118,18 @@ def clf_with_stopwords(tmp_path):
     
     config = Config(
         dataset_name="stopwords_test",
-        codes=["intent_a"],
+        codes=["intent_a", "intent_b"],
         stop_words_file=str(stop_words_file)
     )
     return IntentClassifier(config=config)
 
 # --- Testes de Unidade (Rápidos) ---
-
 def test_init_fails_without_config_or_model(monkeypatch):
     """Verifica se a inicialização falha se NENHUMA fonte de config/modelo for fornecida."""
     # monkeypatch é uma fixture nativa do pytest para alterar o ambiente
     monkeypatch.delenv("WANDB_MODEL_URL", raising=False)
     
-    # Deve falhar, pois nem 'config', nem 'load_model', nem WANDB_MODEL_URL foram dados
-    with pytest.raises(ValueError, match="`config` object must be provided"):
+    with pytest.raises(ValueError, match="config must be a path to a YAML file, a Config object, or None."):
         IntentClassifier()
 
 def test_preprocess_text_lowercase(clf_minimal):
@@ -138,7 +143,7 @@ def test_preprocess_text_min_words(clf_minimal):
     # A config em 'clf_minimal' define min_words=2
     # O código fonte adiciona (min_words + 1) de padding
     result_tensor = clf_minimal.preprocess_text("oi") # Menor que min_words
-    assert result_tensor.numpy()[0] == b'<> <> <>'
+    assert result_tensor.numpy()[0] == b'<> <> <> '
 
 def test_preprocess_text_stopwords(clf_with_stopwords):
     """Testa a remoção de stopwords."""
@@ -146,7 +151,6 @@ def test_preprocess_text_stopwords(clf_with_stopwords):
     assert result_tensor.numpy()[0] == b'frase teste'
 
 # --- Testes de Sanidade Local (Médios) ---
-
 def test_local_train_model_created(clf_local_trained):
     """Verifica se o modelo local foi treinado e atribuído."""
     assert clf_local_trained.model is not None
@@ -180,14 +184,14 @@ def test_one_hot_encoder_local(clf_local_trained):
         assert decoded == code
 
 # --- Testes de Integração (Lentos) --- podem ser pulados se executar: `pytest -m "not integration"`
-
 @pytest.mark.integration
-def test_wandb_model_predicts(clf_wandb):
+@pytest.mark.parametrize("clf_wandb, paths", [("confusion", "confusion"), ("clair", "clair")], indirect=["clf_wandb", "paths"])
+def test_wandb_model_predicts(clf_wandb, paths):
     """
     Teste de integração real:
     Verifica se o modelo carregado do W&B consegue fazer uma previsão.
     """
-    print("🔎 Verificando a previsão (predict) do modelo do W&B")
+    print(f"🔎 Verificando a previsão (predict) do modelo {clf_wandb.config.dataset_name}")
     top_intent, probs = clf_wandb.predict("exemplo qualquer")
     
     print(f"Intenção prevista: {top_intent}")
@@ -197,12 +201,13 @@ def test_wandb_model_predicts(clf_wandb):
     assert top_intent in clf_wandb.codes
 
 @pytest.mark.integration
+@pytest.mark.parametrize("clf_wandb, paths", [("confusion", "confusion"), ("clair", "clair")], indirect=["clf_wandb", "paths"])
 def test_wandb_model_accuracy_easy_examples(clf_wandb, paths):
     """
     Teste de integração real:
     Verifica a acurácia do modelo do W&B em exemplos conhecidos.
     """
-    print("🌐 Usando modelo do W&B para verificação de acurácia")
+    print(f"🌐 Usando modelo {clf_wandb.config.dataset_name} para verificação de acurácia")
     
     with open(paths["examples"], "r") as f:
         data = yaml.safe_load(f)

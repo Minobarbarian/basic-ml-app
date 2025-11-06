@@ -1,33 +1,32 @@
-## Use the official TensorFlow image as a base
 FROM python:3.11-slim-bullseye
 
-# Set the working directory
+# Diretório dentro do contêiner
 WORKDIR /app
 
-# Create a non-root user and grant ownership of the /app directory
+# Criar um usuário não-root para rodar a aplicação
 RUN useradd -ms /bin/bash appuser && chown -R appuser:appuser /app
 
-# Install system-level build dependencies
+# Instalando dependências necessárias do sistema
 RUN apt-get update && apt-get install -y build-essential libffi-dev && rm -rf /var/lib/apt/lists/*
 
-# Switch to the non-root user
+# Mudando para o usuário não-root
 USER appuser
 ENV PATH="/home/appuser/.local/bin:$PATH"
 
-# Upgrade pip
+# Versão mais recente do pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Copy only the requirements file first to leverage Docker caching
+# Copiando o arquivo de requisitos
 COPY --chown=appuser:appuser requirements.txt .
 
-# Install the Python dependencies
+# Instalando dependências do Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
+# Copiando o código da aplicação
 COPY --chown=appuser:appuser . .
 
-# Expose the port the app runs on
+# Expondo a porta em que a aplicação irá rodar
 EXPOSE 8000
 
-# Command to run the application with Uvicorn
+# Comando para rodar a aplicação
 CMD ["uvicorn", "app.app:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "debug"]

@@ -1,6 +1,8 @@
 # data
 
-The training data used by `intent-classifier` should be in yml format. For example:
+Os dados de treino usados pelo `intent-classifier` devem estar no formato yml. 
+
+Exemplo:
 
 ```
 - intent: confusion

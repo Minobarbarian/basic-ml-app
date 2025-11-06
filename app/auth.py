@@ -1,18 +1,8 @@
-"""
-
-# Criar um novo token
-python app/auth.py create --owner="alguem" --expires_in_days=365
-
-# Ler todos os tokens
-python app/auth.py read_all
-
-"""
-
+import fire
 import uuid
 from datetime import datetime, timedelta
 from db.engine import get_mongo_collection
 from fastapi import Request, HTTPException
-
 
 class TokenManager:
     """
@@ -66,8 +56,6 @@ class TokenManager:
         result = tokens_collection.delete_many({"expires_at": {"$lt": datetime.utcnow()}})
         print(f"🧹 Tokens expirados removidos: {result.deleted_count}")
 
-
-
 def verify_token(request: Request):
     token = request.headers.get("Authorization")
     if not token:
@@ -85,7 +73,5 @@ def verify_token(request: Request):
 
     return token_entry["owner"]
 
-
 if __name__ == "__main__":
-    import fire
     fire.Fire(TokenManager)
