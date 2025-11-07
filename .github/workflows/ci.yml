@@ -43,7 +43,7 @@ jobs:
 
       # 4. Executa os testes com pytest (com o report -rA)
       - name: Rodar testes com pytest
-        run: python -m pytest -rA"
+        run: python -m pytest -rA
 
       # 7. Constroi a imagem Docker para validar o Dockerfile
       - name: Construir imagem Docker
