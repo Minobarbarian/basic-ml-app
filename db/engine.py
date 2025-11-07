@@ -1,6 +1,6 @@
 import os
-from pymongo import MongoClient
 from dotenv import load_dotenv
+from pymongo import MongoClient
 
 load_dotenv()
 
@@ -14,4 +14,3 @@ def get_mongo_collection(collection_name: str):
 
 
 # Wrap db functions in this module to separate the database logic from the business logic
-    
