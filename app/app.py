@@ -3,12 +3,17 @@ import re
 import uvicorn
 import logging
 import traceback
+from app import services
 from datetime import datetime
 from datetime import timezone
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from app.auth import verify_token
-from db.engine import get_mongo_collection
+from db.auth import verify_token
+from db.auth import conditional_auth
+
+from pymongo import MongoClient
+from db.engine import MONGO_URI, MONGO_DB
+from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from intent_classifier import IntentClassifier
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,13 +28,48 @@ load_dotenv()
 ENV = os.getenv("ENV", "prod").lower()
 logger.info(f"Running in {ENV} mode")
 
+MODELS = {}
+
+def get_model_urls() -> str:
+    """
+    Busca a string de URLs de modelos da variável de ambiente WANDB_MODELS.
+    Isolar essa lógica em uma função facilita o patching durante os testes.
+    """
+    confusion_url = os.getenv("WANDB_CONFUSION_MODEL_URL")
+    clair_url = os.getenv("WANDB_CLAIR_MODEL_URL")
+    if not confusion_url or not clair_url:
+        raise ValueError("URLs dos modelos (CONFUSION ou CLAIR) não estão definidas")
+    
+    return f"{confusion_url},{clair_url}"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Inicialização do app. Atualmente, apenas carrega modelos do W&B.
+    """
+    global MODELS
+    logger.info("Carregando modelos do W&B durante a inicialização do app...")
+    try:
+        model_urls_str = get_model_urls()
+        MODELS = services.load_all_classifiers(model_urls_str)
+        logger.info("Modelos do W&B carregados com sucesso.")
+    except Exception as e:
+        logger.error(f"Falha crítica ao carregar modelos do W&B: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise Exception(f"Falha crítica ao carregar modelos do W&B: {str(e)}")
+    # This is the point where the app is ready to handle requests
+    yield
+    # Código para ser executado no shutdown (opcional)
+    logger.info("Descarregando modelos e limpando recursos...")
+    MODELS.clear()
+
+
 # Inicializando a aplicação FastAPI
 app = FastAPI(
     title="Aplicação Básica de ML",
     description="Uma API simples para classificar intenções usando modelos de ML pré-treinados.",
     version="1.0.0",
-    docs_url="/docs",        # Swagger UI
-    redoc_url="/redoc",      # ReDoc
+    lifespan=lifespan,
 )
 
 # Configurando CORS
@@ -45,44 +85,6 @@ app.add_middleware(
     allow_headers=["*"],              # permite todos os headers (Authorization, Content-Type...)
 )
 
-# Inicializando conexão com MongoDB
-try:
-    collection = get_mongo_collection(f"{ENV.upper()}_intent_logs")
-    logger.info("Conexão estabelecida com MongoDB.")
-except Exception as e:
-    logger.error(f"Erro ao conectar com MongoDB:{str(e)}")
-    logger.error(traceback.format_exc())
-
-async def conditional_auth(request: Request):
-    global ENV
-    if ENV == "dev":
-        logger.info("Modo DEV: pulando autenticação.")
-        return "dev_user"
-    else:
-        try:
-            return verify_token(request)
-        except HTTPException as he:
-            raise he
-        except Exception as e:
-            logger.error(f"Erro na autenticação: {str(e)}")
-            raise HTTPException(status_code=401, detail="Autenticação falhou.")
-
-# Carregando os modelos
-MODELOS = {}
-try:
-    logger.info("Carregando modelos...")
-    base_dir = os.path.dirname(__file__)
-    models_dir = os.path.join(base_dir, "..", "intent_classifier", "models")
-    model_files = [f for f in os.listdir(models_dir) if f.endswith(".keras")]
-    for model_file in model_files:
-        model_path = os.path.join(models_dir, model_file)
-        model_name = model_file.replace(".keras", "").upper()
-        MODELOS[model_name] = IntentClassifier(load_model=model_path)
-        logger.info(f"Modelo '{model_name}' carregado de '{model_path}'")
-except Exception as e:
-    logger.error(f"Erro ao carregar modelos: {str(e)}")
-    logger.error(traceback.format_exc())
-
 """
 Routes
 """
@@ -92,27 +94,24 @@ async def root():
 
 @app.post("/predict")
 async def predict(text: str, owner: str = Depends(conditional_auth)):
-    # Gerando predições com todos os modelos
-    predictions = {}
-    for model_name, model in MODELOS.items():
-        top_intent, all_probs = model.predict(text)
-        predictions[model_name] = {
-            "top_intent": top_intent,
-            "all_probs": all_probs
-        }
-
-    results = {
-        "text": text, 
-        "owner": owner, 
-        "predictions": predictions, 
-        "timestamp": int(datetime.now(timezone.utc).timestamp())
-    }
-    
-    collection.insert_one(results)
-    results['id'] = str(results['_id'])
-    results.pop('_id')
-
-    return JSONResponse(content=results)
+    """
+    Endpoint de predição.
+    Este é um 'Controller' enxuto. 
+    Ele apenas delega a lógica de negócio para o services.py.
+    """
+    try:
+        # 1. O Controller delega TODA a lógica de negócio para o services.py
+        results = services.predict_and_log_intent(
+            text=text, 
+            owner=owner, 
+            models=MODELS
+        )
+        # 2. O Controller retorna a resposta (Lógica de View) no formato JSON
+        return JSONResponse(content=results)
+    except Exception as e:
+        logger.error(f"Erro ao processar a predição: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro interno ao processar a predição: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

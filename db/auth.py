@@ -1,8 +1,23 @@
+"""
+
+# Criar um novo token
+python db/auth.py create --owner="alguem" --expires_in_days=365
+
+# Ler todos os tokens
+python db/auth.py read_all
+
+"""
+
+import os
 import fire
 import uuid
+from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from db.engine import get_mongo_collection
 from fastapi import Request, HTTPException
+
+load_dotenv()
+ENV = os.getenv("ENV", "prod").lower()
 
 class TokenManager:
     """
@@ -56,6 +71,8 @@ class TokenManager:
         result = tokens_collection.delete_many({"expires_at": {"$lt": datetime.utcnow()}})
         print(f"🧹 Tokens expirados removidos: {result.deleted_count}")
 
+
+
 def verify_token(request: Request):
     token = request.headers.get("Authorization")
     if not token:
@@ -73,5 +90,23 @@ def verify_token(request: Request):
 
     return token_entry["owner"]
 
+
+async def conditional_auth(request: Request):
+    """
+    Retorna o 'owner' baseado no modo do ambiente (dev ou prod).
+    Esta função agora é o 'Depends' principal para as rotas.
+    """
+    if ENV == "dev":
+        return "dev_user"
+    else:
+        try:
+            return verify_token(request)
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            raise HTTPException(status_code=401, detail="Authentication failed")
+
+            
 if __name__ == "__main__":
+    import fire
     fire.Fire(TokenManager)
