@@ -8,9 +8,12 @@ Este repositório foi copiado de https://github.com/adaj/basic-ml-app e adaptado
 ├── app/                        # Lógica do serviço web
 │   ├── app.py                  # Implementação do backend com FastAPI
 │   ├── app.Dockerfile          # Definição do container em que o backend roda
-│   └── auth.py                 # Implementação do backend
+│   ├── schema.py               
+│   └── services.py               
 ├── db/                         # Lógica do banco de dados
-│   └── engine.py               # Encapsulamento do pymongo
+│   ├── auth.py
+│   ├── engine.py               # Encapsulamento do pymongo
+│   └── test.py               
 ├── intent-classifier/          # Scripts relacionados ao modelo de ML
 │   ├── data/                   # Dados para os modelos de ML
 │   ├── models/                 # Modelos treinados
@@ -18,7 +21,8 @@ Este repositório foi copiado de https://github.com/adaj/basic-ml-app e adaptado
 ├── dags/                       # Workflows integrados no Airflow
 │   └── ...                     # TODO
 ├── tests/                      # Testes unitários e de integração
-│   └── ...                     # TODO
+│   ├── test_app.py
+│   └── test_intent_classifier.py
 ├── docker-compose.yml          # Arquivo de orquestração dos serviços envolvidos
 ├── requirements.txt            # Dependências do Python
 ├── .env                        # Variáveis de ambiente
@@ -27,6 +31,8 @@ Este repositório foi copiado de https://github.com/adaj/basic-ml-app e adaptado
 ## ⚙️ Instruções para deploy em ambiente de teste
 
 ### Localmente
+
+#### Para o backend, num terminal:
 ```shell
 # Crie e ative um ambiente conda com as dependências do projeto
 conda create -n intent-clf python=3.11
@@ -39,6 +45,14 @@ export ENV=dev
 python -m app.auth create --owner="nome" --expires_in_days=365
 # Suba o serviço web e acesse-o em localhost:8000
 uvicorn app.app:app --host 0.0.0.0 --port 8000 --log-level debug
+
+#### Para o frontend, noutro terminal:
+```shell
+conda activate intent-clf
+python -m streamlit run view/streamlit_app.py
+```
+
+Quando estiver executando, acesse o link fornecido.
 ```
 
 ### Utilizando o Docker
