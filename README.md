@@ -27,11 +27,10 @@ Este repositório foi copiado de https://github.com/adaj/basic-ml-app e adaptado
 ├── requirements.txt            # Dependências do Python
 ├── .env                        # Variáveis de ambiente
 └── .gitignore
-
+```
 ## ⚙️ Instruções para deploy em ambiente de teste
 
 ### Localmente
-
 #### Para o backend, num terminal:
 ```shell
 # Crie e ative um ambiente conda com as dependências do projeto
@@ -45,15 +44,14 @@ export ENV=dev
 python -m app.auth create --owner="nome" --expires_in_days=365
 # Suba o serviço web e acesse-o em localhost:8000
 uvicorn app.app:app --host 0.0.0.0 --port 8000 --log-level debug
+```
 
 #### Para o frontend, noutro terminal:
 ```shell
 conda activate intent-clf
 python -m streamlit run view/streamlit_app.py
 ```
-
-Quando estiver executando, acesse o link fornecido.
-```
+Quando estiver executando, acesse o link fornecido nesse terminal.
 
 ### Utilizando o Docker
 
